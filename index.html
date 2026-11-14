@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; manifest-src 'self'; worker-src 'self'; img-src 'self'; form-action 'none'; base-uri 'none'">
+<meta name="theme-color" content="#f3f6f1">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icon-180.png">
+<link rel="icon" href="./icon-192.png">
+<title>Vegas買付計算 | 夏桜</title>
+<style>
+:root{color-scheme:light;--ink:#253e35;--muted:#496158;--line:#d4dfd7;--accent:#185741}
+*{box-sizing:border-box}
+body{margin:0;background:#f3f6f1;color:var(--ink);font:16px/1.5 -apple-system,BlinkMacSystemFont,sans-serif}
+main{max-width:490px;margin:auto;padding:24px max(16px,env(safe-area-inset-right)) 32px max(16px,env(safe-area-inset-left))}
+h1{margin:0;font-size:26px}
+h2{margin:0;font-size:18px}
+p{color:var(--muted);margin:6px 0 16px}
+.panel{padding:16px;border:1px solid var(--line);border-radius:12px;background:white}
+.vegas-form{display:grid;gap:12px}
+.vegas-form label{display:grid;min-width:0;gap:4px;font-weight:600}
+.vegas-form input,.vegas-form select{width:100%;min-height:46px;padding:9px 12px;border:1px solid #a9bdb1;border-radius:8px;background:#fff;color:var(--ink);font:inherit}
+.vegas-form p,.vegas-results p{margin:0;font-size:14px}
+.vegas-results{margin-top:14px;background:#e9f2e9;overflow-wrap:anywhere}
+.vegas-results dl{margin:10px 0}
+.vegas-results dl div{display:flex;justify-content:space-between;align-items:baseline;gap:4px 12px;flex-wrap:wrap}
+.vegas-results dd{margin:0;font-weight:700;font-variant-numeric:tabular-nums}
+.vegas-results .vegas-profit{color:var(--accent);font-size:26px}
+.vegas-results .vegas-target-met{color:var(--accent);font-weight:700}
+</style>
+</head>
+<body>
+<main>
+<h1>Vegas買付計算</h1>
+<p>1点あたりの試算です。入力内容は保存されません。</p>
+<div id="vegasForm" class="panel vegas-form">
+<label>ブランド<select id="vegasBrand"><option>COACH</option><option>Tory Burch</option></select></label>
+<label>仕入価格（USD）<input id="vegasPurchase" type="number" autocomplete="off" inputmode="decimal" min="0" step="any"></label>
+<label>米国売上税率（%）<input id="vegasTax" type="number" autocomplete="off" inputmode="decimal" min="0" max="100" step="any" value="8.75"></label>
+<label>為替レート（円/USD）<input id="vegasRate" type="number" autocomplete="off" inputmode="decimal" min="0" step="any"></label>
+<label>BUYMA想定販売価格（円）<input id="vegasSale" type="number" autocomplete="off" inputmode="decimal" min="0" step="any"></label>
+<label>BUYMA手数料率（%）<input id="vegasFee" type="number" autocomplete="off" inputmode="decimal" min="0" step="any" value="6"></label>
+<label>購入者への国内送料（円）<input id="vegasShipping" type="number" autocomplete="off" inputmode="decimal" min="0" step="any"></label>
+<label>その他費用（円）<input id="vegasOther" type="number" autocomplete="off" inputmode="decimal" min="0" step="any"></label>
+<p>費用がかからない場合は0を入力してください。</p>
+</div>
+<section class="panel vegas-results" aria-labelledby="vegasResultsTitle" aria-live="polite" aria-atomic="true">
+<h2 id="vegasResultsTitle">試算結果</h2>
+<dl>
+<div><dt>税込仕入原価</dt><dd id="vegasCost">—</dd></div>
+<div><dt>予想利益</dt><dd id="vegasProfit" class="vegas-profit">—</dd></div>
+<div><dt>利益率</dt><dd id="vegasMargin">—</dd></div>
+</dl>
+<p id="vegasTarget"></p><p id="vegasMessage">計算が開始されていません。入力しても結果が変わらない場合は、JavaScriptを実行できるアプリで開いてください。</p>
+</section>
+<p id="offlineStatus" role="status">オフライン利用の準備を確認しています。</p>
+</main>
+<script>
+'use strict';
+(function(){
+  const el=id=>document.getElementById(id);
+  const form=el('vegasForm');
+  const amount=id=>{
+    const input=el(id);
+    if(input.validity.badInput)return NaN;
+    return input.value===''?null:Number(input.value);
+  };
+  const yen=value=>value.toLocaleString('ja-JP',{maximumFractionDigits:2})+' 円';
+
+  // 夏桜の BUYMA 予想利益と同じ式。画面の入力検証後に呼び出す。
+  function calculateBuymaProfit(cost,salePrice,feeRate,shipping,other){
+    if([salePrice,feeRate,shipping,other].includes(null))return null;
+    const fee=salePrice*(feeRate/100);
+    const profit=salePrice-fee-cost-shipping-other;
+    const margin=profit/salePrice*100;
+    if(!Number.isFinite(profit)||!Number.isFinite(margin))return {reason:'計算結果が大きすぎます'};
+    return {profit,margin,meetsTarget:profit>=5000};
+  }
+
+  function render(){
+    const purchase=amount('vegasPurchase'),tax=amount('vegasTax'),rate=amount('vegasRate');
+    const salePrice=amount('vegasSale'),feeRate=amount('vegasFee');
+    const customerShipping=amount('vegasShipping'),otherSellingExpenses=amount('vegasOther');
+    const values=[purchase,tax,rate,salePrice,feeRate,customerShipping,otherSellingExpenses];
+    const errors=[];
+    if(values.some(value=>value!==null&&(!Number.isFinite(value)||value<0)))errors.push('金額と料率には0以上の数値を入力してください。');
+    if(tax>100||feeRate>=100)errors.push('売上税率は100%以下、BUYMA手数料率は100%未満で入力してください。');
+    if(rate===0||salePrice===0)errors.push('為替レートと想定販売価格は0より大きい数値を入力してください。');
+
+    let cost=null,result=null;
+    if([purchase,tax,rate].every(value=>value!==null&&Number.isFinite(value))
+      &&purchase>=0&&tax>=0&&tax<=100&&rate>0){
+      // 税込ドル額をセント単位に丸めてから円換算する。
+      const cents=purchase*(100+tax);
+      const converted=Math.round(cents+Number.EPSILON*Math.abs(cents))/100*rate;
+      if(Number.isFinite(converted))cost=converted;
+      else errors.push('計算結果が大きすぎます。');
+    }
+    if(cost!==null&&!errors.length){
+      result=calculateBuymaProfit(cost,salePrice,feeRate,customerShipping,otherSellingExpenses);
+    }
+
+    el('vegasCost').textContent=cost===null?'—':yen(cost);
+    const calculated=result&&!result.reason;
+    const displayedProfit=calculated?yen(result.profit):'—';
+    el('vegasProfit').textContent=calculated&&!result.meetsTarget&&displayedProfit===yen(5000)
+      ? '5,000 円未満':displayedProfit;
+    el('vegasMargin').textContent=calculated
+      ? result.margin.toLocaleString('ja-JP',{maximumFractionDigits:2})+'%':'—';
+    const target=el('vegasTarget');
+    target.textContent=calculated
+      ? (result.meetsTarget?'目安達成 · 予想利益5,000円以上':'目安 · 予想利益5,000円未満')
+      : '目安 · 予想利益5,000円以上';
+    target.classList.toggle('vegas-target-met',Boolean(calculated&&result.meetsTarget));
+    el('vegasMessage').textContent=errors.join(' ')||
+      (calculated?'':result?.reason==='計算結果が大きすぎます'?'計算結果が大きすぎます。':'金額と料率を入力すると結果を表示します。');
+  }
+
+  form.addEventListener('input',render);
+  render();
+})();
+</script>
+<script>
+(async function(){
+  const status=document.getElementById('offlineStatus');
+  if(!('serviceWorker' in navigator)){
+    status.textContent='オフライン利用の準備にはHTTPSで開く必要があります。';
+    return;
+  }
+  try{
+    await navigator.serviceWorker.register('./service-worker.js',{updateViaCache:'none'});
+    function showReady(){
+      if(navigator.serviceWorker.controller){
+        status.textContent='オフライン利用の準備ができました。';
+      }
+    }
+    navigator.serviceWorker.addEventListener('controllerchange',showReady);
+    showReady();
+  }catch{
+    status.textContent='オフライン利用の準備ができませんでした。オンラインで開き直してください。';
+  }
+})();
+</script>
+</body>
+</html>
